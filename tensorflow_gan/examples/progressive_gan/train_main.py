@@ -27,26 +27,46 @@ from __future__ import division
 from __future__ import print_function
 
 import sys
-
+import os
 from absl import flags
 from absl import logging
 import tensorflow as tf
+import horovod.tensorflow as hvd
 
 from tensorflow_gan.examples.progressive_gan import data_provider
 from tensorflow_gan.examples.progressive_gan import train
 
 flags.DEFINE_string('dataset_file_pattern', '', 'Dataset file pattern.')
 
-flags.DEFINE_integer('start_height', 4, 'Start image height.')
+flags.DEFINE_integer('start_height', 64, 'Start image height.')
 
-flags.DEFINE_integer('start_width', 4, 'Start image width.')
+flags.DEFINE_integer('start_width', 64, 'Start image width.')
 
 flags.DEFINE_integer('scale_base', 2, 'Resolution multiplier.')
 
 flags.DEFINE_integer('num_resolutions', 4, 'Number of progressive resolutions.')
 
+flags.DEFINE_integer('num_intra_threads', 12,
+                     'Number of threads to use for intra-op parallelism. If '
+                     'set to 0, the system will pick an appropriate number.')
+flags.DEFINE_integer('num_inter_threads', 1,
+                     'Number of threads to use for inter-op parallelism. If '
+                     'set to 0, the system will pick an appropriate number.')
+
+flags.DEFINE_boolean('mkl', True, 'If true, set MKL environment variables.')
+flags.DEFINE_integer('kmp_blocktime', 0,
+                     'The time, in milliseconds, that a thread should wait, '
+                     'after completing the execution of a parallel region, '
+                     'before sleeping')
+flags.DEFINE_string('kmp_affinity', 'granularity=fine,verbose,compact,1,0',
+                    'Restricts execution of certain threads (virtual execution '
+                    'units) to a subset of the physical processing units in a '
+                    'multiprocessor computer.')
+flags.DEFINE_integer('kmp_settings', 1,
+                     'If set to 1, MKL settings will be printed.')
+
 flags.DEFINE_list(
-    'batch_size_schedule', [8, 8, 4],
+    'batch_size_schedule', [64, 64, 32],
     'A list of batch sizes for each resolution, if '
     'len(batch_size_schedule) < num_resolutions, pad the schedule in the '
     'beginning with the first batch size.')
@@ -58,15 +78,15 @@ flags.DEFINE_integer('colors', 3, 'Number of image channels.')
 flags.DEFINE_bool('to_rgb_use_tanh_activation', False,
                   'Whether to apply tanh activation when output rgb.')
 
-flags.DEFINE_integer('stable_stage_num_images', 1000,
+flags.DEFINE_integer('stable_stage_num_images', 100000,
                      'Number of images in the stable stage.')
 
-flags.DEFINE_integer('transition_stage_num_images', 1000,
+flags.DEFINE_integer('transition_stage_num_images', 100000,
                      'Number of images in the transition stage.')
 
-flags.DEFINE_integer('total_num_images', 10000, 'Total number of images.')
+flags.DEFINE_integer('total_num_images', 1000000, 'Total number of images.')
 
-flags.DEFINE_integer('save_summaries_num_images', 100,
+flags.DEFINE_integer('save_summaries_num_images', 1000,
                      'Save summaries in this number of images.')
 
 flags.DEFINE_integer('latent_vector_size', 128, 'Latent vector size.')
@@ -150,6 +170,13 @@ def _provide_real_images(batch_size, **kwargs):
 def main(_):
   if not tf.io.gfile.exists(FLAGS.train_log_dir):
     tf.io.gfile.makedirs(FLAGS.train_log_dir)
+
+  hvd.init()
+  os.environ['KMP_SETTINGS'] = str(FLAGS.kmp_settings)
+  os.environ['KMP_AFFINITY'] = FLAGS.kmp_affinity
+  os.environ['KMP_BLOCKTIME'] = str(1)
+  if FLAGS.num_intra_threads > 0:
+    os.environ['OMP_NUM_THREADS'] = str(FLAGS.num_intra_threads)
 
   config = _make_config_from_flags()
   logging.info('\n'.join(['{}={}'.format(k, v) for k, v in config.iteritems()]))

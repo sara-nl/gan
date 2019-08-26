@@ -33,6 +33,8 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_gan as tfgan
 
+import horovod.tensorflow as hvd
+
 from tensorflow_gan.examples.progressive_gan import networks
 
 
@@ -238,8 +240,10 @@ def define_train_ops(gan_model, gan_loss, **kwargs):
     beta1, beta2 = kwargs['adam_beta1'], kwargs['adam_beta2']
     gen_opt = tf.compat.v1.train.AdamOptimizer(
         kwargs['generator_learning_rate'], beta1, beta2)
+    gen_opt = hvd.DistributedOptimizer(gen_opt)
     dis_opt = tf.compat.v1.train.AdamOptimizer(
         kwargs['discriminator_learning_rate'], beta1, beta2)
+    dis_opt = hvd.DistributedOptimizer(dis_opt)
     gan_train_ops = tfgan.gan_train_ops(gan_model, gan_loss, gen_opt, dis_opt)
   return gan_train_ops, tf.compat.v1.get_collection(
       tf.compat.v1.GraphKeys.GLOBAL_VARIABLES, scope=var_scope.name)
@@ -303,7 +307,7 @@ def build_model(stage_id, batch_size, real_images, **kwargs):
   num_blocks, num_images = get_stage_info(stage_id, **kwargs)
 
   current_image_id = tf.compat.v1.train.get_or_create_global_step()
-  current_image_id_inc_op = current_image_id.assign_add(batch_size)
+  current_image_id_inc_op = current_image_id.assign_add(batch_size * hvd.size())
   tf.compat.v1.summary.scalar('current_image_id', current_image_id)
 
   progress = networks.compute_progress(
@@ -576,13 +580,15 @@ def train(model, **kwargs):
                model.num_blocks, model.num_images)
 
   scaffold = make_scaffold(model.stage_id, model.optimizer_var_list, **kwargs)
-
+  
+  config_proto = tf.ConfigProto(intra_op_parallelism_threads=12, inter_op_parallelism_threads=2)
   tfgan.gan_train(
       model.gan_train_ops,
-      logdir=make_train_sub_dir(model.stage_id, **kwargs),
+      logdir=make_train_sub_dir(model.stage_id, **kwargs), # if hvd.rank()==0 else None,
       get_hooks_fn=tfgan.get_sequential_train_hooks(tfgan.GANTrainSteps(1, 1)),
       hooks=[
-          tf.estimator.StopAtStepHook(last_step=model.num_images),
+          hvd.BroadcastGlobalVariablesHook(0),
+          tf.estimator.StopAtStepHook(last_step=model.num_images // hvd.size()),
           tf.estimator.LoggingTensorHook([make_status_message(model)],
                                          every_n_iter=10)
       ],
@@ -590,4 +596,5 @@ def train(model, **kwargs):
       is_chief=(kwargs['task'] == 0),
       scaffold=scaffold,
       save_checkpoint_secs=600,
+      config=config_proto,
       save_summaries_steps=(kwargs['save_summaries_num_images']))

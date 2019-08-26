@@ -36,6 +36,7 @@ import os
 import time
 
 import tensorflow as tf
+import horovod.tensorflow as hvd
 
 from tensorflow_gan.python import contrib_utils as contrib
 from tensorflow_gan.python import namedtuples
@@ -1243,7 +1244,7 @@ def gan_train(train_ops,
   with tf.compat.v1.train.MonitoredTrainingSession(
       master=master,
       is_chief=is_chief,
-      checkpoint_dir=logdir,
+      checkpoint_dir=logdir if hvd.rank()==0 else None,
       scaffold=scaffold,
       hooks=hooks,
       chief_only_hooks=chief_only_hooks,
